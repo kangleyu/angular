@@ -71,11 +71,11 @@ export declare type AnimationStateTransitionMetadata = any;
 /** @deprecated */
 export interface AnimationStyleMetadata extends AnimationMetadata {
     offset?: number;
-    styles: {
+    styles: '*' | {
         [key: string]: string | number;
-    } | {
+    } | Array<{
         [key: string]: string | number;
-    }[];
+    } | '*'>;
 }
 
 /** @deprecated */

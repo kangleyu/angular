@@ -5,14 +5,31 @@
  * Use of this source code is governed by an MIT-style license that can be
  * found in the LICENSE file at https://angular.io/license
  */
-import {AUTO_STYLE, AnimationMetadata, AnimationMetadataType, animate, group, keyframes, sequence, style, ɵStyleData} from '@angular/animations';
+import {AUTO_STYLE, AnimationMetadata, AnimationMetadataType, animate, animateChild, animation, group, keyframes, query, queryAll, sequence, stagger, style, wait, ɵStyleData} from '@angular/animations';
 
 import {Animation} from '../../src/dsl/animation';
+import {buildAnimationAst} from '../../src/dsl/animation_ast_builder';
 import {AnimationTimelineInstruction} from '../../src/dsl/animation_timeline_instruction';
-import {validateAnimationSequence} from '../../src/dsl/animation_validator_visitor';
+import {ElementInstructionMap} from '../../src/dsl/element_instruction_map';
+
+function createDiv() {
+  return document.createElement('div');
+}
 
 export function main() {
   describe('Animation', () => {
+    // these tests are only mean't to be run within the DOM (for now)
+    if (typeof Element == 'undefined') return;
+
+    let rootElement: any;
+
+    beforeEach(() => {
+      rootElement = createDiv();
+      document.body.appendChild(rootElement);
+    });
+
+    afterEach(() => { document.body.removeChild(rootElement); });
+
     describe('validation', () => {
       it('should throw an error if one or more but not all keyframes() styles contain offsets',
          () => {
@@ -90,6 +107,78 @@ export function main() {
           validateAndThrowAnimationSequence(steps2);
         }).toThrowError(/The provided timing value "500ms 500ms 500ms ease-out" is invalid/);
       });
+
+      it('should throw if negative durations are used', () => {
+        const steps = [animate(-1000, style({opacity: 1}))];
+
+        expect(() => {
+          validateAndThrowAnimationSequence(steps);
+        }).toThrowError(/Duration values below 0 are not allowed for this animation step/);
+
+        const steps2 = [animate('-1s', style({opacity: 1}))];
+
+        expect(() => {
+          validateAndThrowAnimationSequence(steps2);
+        }).toThrowError(/Duration values below 0 are not allowed for this animation step/);
+      });
+
+      it('should throw if negative delays are used', () => {
+        const steps = [animate('1s -500ms', style({opacity: 1}))];
+
+        expect(() => {
+          validateAndThrowAnimationSequence(steps);
+        }).toThrowError(/Delay values below 0 are not allowed for this animation step/);
+
+        const steps2 = [animate('1s -0.5s', style({opacity: 1}))];
+
+        expect(() => {
+          validateAndThrowAnimationSequence(steps2);
+        }).toThrowError(/Delay values below 0 are not allowed for this animation step/);
+      });
+
+      it('should throw if keyframes() is not used inside of animate()', () => {
+        const steps = [keyframes([])];
+
+        expect(() => {
+          validateAndThrowAnimationSequence(steps);
+        }).toThrowError(/keyframes\(\) must be placed inside of a call to animate\(\)/);
+
+        const steps2 = [group([keyframes([])])];
+
+        expect(() => {
+          validateAndThrowAnimationSequence(steps2);
+        }).toThrowError(/keyframes\(\) must be placed inside of a call to animate\(\)/);
+      });
+
+      describe('wait()', () => {
+        it('should throw an error if wait contains a negative delay', () => {
+          const steps = [wait(-1000)];
+
+          expect(() => {
+            validateAndThrowAnimationSequence(steps);
+          }).toThrowError(/Negative wait delays are not supported/);
+
+          const steps2 = [wait('-500ms')];
+
+          expect(() => {
+            validateAndThrowAnimationSequence(steps2);
+          }).toThrowError(/Negative wait delays are not supported/);
+        });
+
+        it('should only support a single unit of time when a string delay is provided', () => {
+          const steps = [wait('1s 2s')];
+
+          expect(() => {
+            validateAndThrowAnimationSequence(steps);
+          }).toThrowError(/Wait delays can only support a single timing value/);
+
+          const steps2 = [wait('1s easing')];
+
+          expect(() => {
+            validateAndThrowAnimationSequence(steps2);
+          }).toThrowError(/Wait delays cannot support easing values/);
+        });
+      });
     });
 
     describe('keyframe building', () => {
@@ -102,7 +191,7 @@ export function main() {
                animate(1000, style({width: 200}))
              ];
 
-             const players = invokeAnimationSequence(steps);
+             const players = invokeAnimationSequence(rootElement, steps, null);
              expect(players[0].keyframes).toEqual([
                {height: AUTO_STYLE, width: 0, offset: 0},
                {height: 50, width: 0, offset: .25},
@@ -116,7 +205,7 @@ export function main() {
            () => {
              const steps = [animate(1000, style({width: 999}))];
 
-             const players = invokeAnimationSequence(steps);
+             const players = invokeAnimationSequence(rootElement, steps, null);
              expect(players[0].keyframes).toEqual([
                {width: AUTO_STYLE, offset: 0}, {width: 999, offset: 1}
              ]);
@@ -128,7 +217,7 @@ export function main() {
             animate(1000, style({width: 100, height: 400, opacity: 1}))
           ];
 
-          const players = invokeAnimationSequence(steps);
+          const players = invokeAnimationSequence(rootElement, steps, null);
           expect(players[0].keyframes).toEqual([
             {width: 200, height: 0, opacity: 0, offset: 0},
             {width: 100, height: 400, opacity: 1, offset: 1}
@@ -142,7 +231,7 @@ export function main() {
                animate(1000, style({opacity: 1}))
              ];
 
-             const players = invokeAnimationSequence(steps);
+             const players = invokeAnimationSequence(rootElement, steps, null);
              const keyframes = humanizeOffsets(players[0].keyframes, 4);
 
              expect(keyframes).toEqual([
@@ -159,7 +248,7 @@ export function main() {
             animate('1s cubic-bezier(.29, .55 ,.53 ,1.53)', style({opacity: 1}))
           ];
 
-          const player = invokeAnimationSequence(steps)[0];
+          const player = invokeAnimationSequence(rootElement, steps, null)[0];
           const firstKeyframe = player.keyframes[0];
           const firstKeyframeEasing = firstKeyframe['easing'] as string;
           expect(firstKeyframeEasing.replace(/\s+/g, '')).toEqual('cubic-bezier(.29,.55,.53,1.53)');
@@ -177,7 +266,7 @@ export function main() {
                animate(1000, style({width: 400})), sequence([animate(1000, style({width: 500}))])
              ];
 
-             const players = invokeAnimationSequence(steps);
+             const players = invokeAnimationSequence(rootElement, steps, null);
              expect(players[0].keyframes).toEqual([
                {width: 0, offset: 0}, {width: 100, offset: .2}, {width: 200, offset: .4},
                {width: 300, offset: .6}, {width: 400, offset: .8}, {width: 500, offset: 1}
@@ -192,7 +281,7 @@ export function main() {
                ])
              ];
 
-             const players = invokeAnimationSequence(steps);
+             const players = invokeAnimationSequence(rootElement, steps, null);
              expect(humanizeOffsets(players[0].keyframes, 4)).toEqual([
                {width: 100, offset: 0}, {width: 100, offset: .001}, {width: 200, offset: 1}
              ]);
@@ -211,7 +300,7 @@ export function main() {
                animate(1000, style({width: 500, height: 500}))
              ];
 
-             const players = invokeAnimationSequence(steps);
+             const players = invokeAnimationSequence(rootElement, steps, null);
              expect(players.length).toEqual(4);
 
              const finalPlayer = players[players.length - 1];
@@ -219,6 +308,30 @@ export function main() {
                {width: 200, height: 200, offset: 0}, {width: 500, height: 500, offset: 1}
              ]);
            });
+      });
+
+      describe('subtitutions', () => {
+        it('should substitute in timing values', () => {
+          function makeAnimation(exp: string, values: {[key: string]: any}) {
+            const steps = [style({opacity: 0}), animate(exp, style({opacity: 1}))];
+            return invokeAnimationSequence(rootElement, steps, values);
+          }
+
+          let players = makeAnimation('$duration', {duration: '1234ms'});
+          expect(players[0].duration).toEqual(1234);
+
+          players = makeAnimation('${duration}', {duration: '4567ms'});
+          expect(players[0].duration).toEqual(4567);
+
+          players = makeAnimation('${duration}', {duration: '9s 2s'});
+          expect(players[0].duration).toEqual(11000);
+
+          players = makeAnimation('$duration 1s', {duration: '1.5s'});
+          expect(players[0].duration).toEqual(2500);
+
+          players = makeAnimation('$duration ${delay}', {duration: '1s', delay: '2s'});
+          expect(players[0].duration).toEqual(3000);
+        });
       });
 
       describe('keyframes()', () => {
@@ -230,7 +343,7 @@ export function main() {
             animate(1000, style({height: 0, opacity: 0}))
           ];
 
-          const players = invokeAnimationSequence(steps);
+          const players = invokeAnimationSequence(rootElement, steps, null);
           expect(players.length).toEqual(3);
 
           const player0 = players[0];
@@ -267,7 +380,7 @@ export function main() {
                animate(1000, style({color: 'green', opacity: 0}))
              ];
 
-             const players = invokeAnimationSequence(steps);
+             const players = invokeAnimationSequence(rootElement, steps, null);
              const finalPlayer = players[players.length - 1];
              expect(finalPlayer.keyframes).toEqual([
                {opacity: 1, color: 'blue', offset: 0}, {opacity: 0, color: 'green', offset: 1}
@@ -283,7 +396,7 @@ export function main() {
                                                             ]))
              ];
 
-             const players = invokeAnimationSequence(steps);
+             const players = invokeAnimationSequence(rootElement, steps, null);
              expect(players.length).toEqual(2);
 
              const topPlayer = players[0];
@@ -305,7 +418,7 @@ export function main() {
                 keyframes([style({opacity: .8, offset: .5}), style({opacity: 1, offset: 1})]))
           ];
 
-          const player = invokeAnimationSequence(steps)[1];
+          const player = invokeAnimationSequence(rootElement, steps, null)[1];
           expect(player.easing).toEqual('ease-out');
         });
 
@@ -318,7 +431,7 @@ export function main() {
                    keyframes([style({opacity: .8, offset: .5}), style({opacity: 1, offset: 1})]))
              ];
 
-             const player = invokeAnimationSequence(steps)[1];
+             const player = invokeAnimationSequence(rootElement, steps, null)[1];
              expect(player.delay).toEqual(2500);
            });
 
@@ -343,7 +456,7 @@ export function main() {
                group([animate('2s', style({height: '500px', width: '500px'}))])
              ];
 
-             const players = invokeAnimationSequence(steps);
+             const players = invokeAnimationSequence(rootElement, steps, null);
              expect(players.length).toEqual(5);
 
              const firstPlayerKeyframes = players[0].keyframes;
@@ -381,7 +494,7 @@ export function main() {
                                   style({opacity: 1, offset: 1})
                                 ]));
 
-          const players = invokeAnimationSequence(steps);
+          const players = invokeAnimationSequence(rootElement, steps, null);
           expect(players.length).toEqual(1);
           const player = players[0];
 
@@ -398,7 +511,7 @@ export function main() {
                         {type: AnimationMetadataType.Style, offset: 1, styles: {opacity: 1}},
                       ]));
 
-          const players = invokeAnimationSequence(steps);
+          const players = invokeAnimationSequence(rootElement, steps, null);
           expect(players.length).toEqual(1);
           const player = players[0];
 
@@ -417,7 +530,7 @@ export function main() {
                animate(1000, style({width: 1000, height: 1000}))
              ];
 
-             const players = invokeAnimationSequence(steps);
+             const players = invokeAnimationSequence(rootElement, steps, null);
              expect(players.length).toEqual(4);
 
              const player0 = players[0];
@@ -460,7 +573,7 @@ export function main() {
             ])
           ])];
 
-          const players = invokeAnimationSequence(steps);
+          const players = invokeAnimationSequence(rootElement, steps, null);
           expect(players.length).toEqual(2);
 
           const gPlayer1 = players[0];
@@ -484,7 +597,7 @@ export function main() {
             animate('1s 1s', style({height: 200, width: 200}))
           ];
 
-          const players = invokeAnimationSequence(steps);
+          const players = invokeAnimationSequence(rootElement, steps, null);
           expect(players.length).toEqual(4);
 
           const finalPlayer = players[players.length - 1];
@@ -505,7 +618,7 @@ export function main() {
             animate(2000, style({width: 0, opacity: 0}))
           ];
 
-          const players = invokeAnimationSequence(steps);
+          const players = invokeAnimationSequence(rootElement, steps, null);
           const middlePlayer = players[2];
           expect(middlePlayer.delay).toEqual(2000);
           expect(middlePlayer.duration).toEqual(2000);
@@ -516,13 +629,93 @@ export function main() {
         });
       });
 
+      describe('wait()', () => {
+        it('should postpone the the next step by the given delay if no animation is given', () => {
+          const steps = [
+            style({width: '0px'}), animate(1000, style({width: '100px'})), wait(1000),
+            animate(1000, style({width: '200px'})), animate(1000, style({width: '300px'}))
+          ];
+
+          const players = invokeAnimationSequence(rootElement, steps, null);
+          expect(players.length).toEqual(1);
+          const [p1] = players;
+
+          expect(p1.duration).toEqual(4000);
+          expect(p1.keyframes).toEqual([
+            {width: '0px', offset: 0}, {width: '100px', offset: .25}, {width: '100px', offset: .5},
+            {width: '200px', offset: .75}, {width: '300px', offset: 1}
+          ]);
+        });
+
+        it('should use a string-based duration if provided', () => {
+          const steps = [
+            style({width: '0px'}), wait('1000ms'), wait('1s'),
+            animate(1000, style({width: '100px'}))
+          ];
+
+          const players = invokeAnimationSequence(rootElement, steps, null);
+          expect(players.length).toEqual(1);
+          const [p1] = players;
+
+          expect(p1.duration).toEqual(3001);
+          expect(humanizeOffsets(p1.keyframes, 4)).toEqual([
+            {width: '0px', offset: 0}, {width: '0px', offset: .0003}, {width: '0px', offset: .3336},
+            {width: '0px', offset: .6668}, {width: '100px', offset: 1}
+          ]);
+        });
+
+        it('should allow an empty animation block to be used', () => {
+          const steps =
+              [style({width: '0px'}), wait(1000, []), animate(1000, style({width: '100px'}))];
+
+          const players = invokeAnimationSequence(rootElement, steps, null);
+          expect(players.length).toEqual(1);
+          const [p1] = players;
+
+          expect(p1.duration).toEqual(2001);
+          expect(humanizeOffsets(p1.keyframes, 4)).toEqual([
+            {width: '0px', offset: 0}, {width: '0px', offset: .0005}, {width: '0px', offset: .5002},
+            {width: '100px', offset: 1}
+          ]);
+        });
+
+        it('should delay the inner sequence of steps if an animation is provided', () => {
+          const steps = [
+            style({width: '0px', height: '0px'}),
+            wait(1000, group([
+                   animate(1000, style({width: '100px'})),
+                   animate(2000, style({height: '100px'}))
+                 ]))
+          ];
+
+          const players = invokeAnimationSequence(rootElement, steps, null);
+          expect(players.length).toEqual(3);
+          const [p1, p2, p3] = players;
+
+          expect(p2.delay).toEqual(1001);
+          expect(p2.duration).toEqual(1000);
+          expect(p2.keyframes).toEqual([
+            {width: '0px', offset: 0},
+            {width: '100px', offset: 1},
+          ])
+
+          expect(p3.delay).toEqual(1001);
+          expect(p3.duration).toEqual(2000);
+          expect(p3.keyframes).toEqual([
+            {height: '0px', offset: 0},
+            {height: '100px', offset: 1},
+          ])
+        });
+      });
+
+
       describe('timing values', () => {
         it('should properly combine an easing value with a delay into a set of three keyframes',
            () => {
              const steps: AnimationMetadata[] =
                  [style({opacity: 0}), animate('3s 1s ease-out', style({opacity: 1}))];
 
-             const player = invokeAnimationSequence(steps)[0];
+             const player = invokeAnimationSequence(rootElement, steps, null)[0];
              expect(player.keyframes).toEqual([
                {opacity: 0, offset: 0}, {opacity: 0, offset: .25, easing: 'ease-out'},
                {opacity: 1, offset: 1}
@@ -535,7 +728,7 @@ export function main() {
             animate('2s ease-out', style({width: 20})), animate('1s ease-in', style({width: 30}))
           ];
 
-          const players = invokeAnimationSequence(steps);
+          const players = invokeAnimationSequence(rootElement, steps, null);
           expect(players.length).toEqual(1);
 
           const player = players[0];
@@ -560,7 +753,7 @@ export function main() {
                ])
              ];
 
-             const player = invokeAnimationSequence(steps)[0];
+             const player = invokeAnimationSequence(rootElement, steps, null)[0];
              expect(player.duration).toEqual(1000);
              expect(player.delay).toEqual(0);
            });
@@ -579,7 +772,7 @@ export function main() {
                        ]))
              ];
 
-             const players = invokeAnimationSequence(steps);
+             const players = invokeAnimationSequence(rootElement, steps, null);
              expect(players[0].delay).toEqual(0);     // top-level animation
              expect(players[1].delay).toEqual(1500);  // first entry in group()
              expect(players[2].delay).toEqual(1500);  // second entry in group()
@@ -595,7 +788,7 @@ export function main() {
 
           const toStyles: ɵStyleData[] = [{background: 'red'}];
 
-          const player = invokeAnimationSequence(steps, fromStyles, toStyles)[0];
+          const player = invokeAnimationSequence(rootElement, steps, {}, fromStyles, toStyles)[0];
           expect(player.duration).toEqual(0);
           expect(player.keyframes).toEqual([]);
         });
@@ -608,7 +801,7 @@ export function main() {
 
              const toStyles: ɵStyleData[] = [{background: 'red'}];
 
-             const players = invokeAnimationSequence(steps, fromStyles, toStyles);
+             const players = invokeAnimationSequence(rootElement, steps, {}, fromStyles, toStyles);
              expect(players[0].keyframes).toEqual([
                {background: 'blue', height: 100, offset: 0},
                {background: 'red', height: AUTO_STYLE, offset: 1}
@@ -623,7 +816,7 @@ export function main() {
 
              const toStyles: ɵStyleData[] = [{background: 'red'}];
 
-             const players = invokeAnimationSequence(steps, fromStyles, toStyles);
+             const players = invokeAnimationSequence(rootElement, steps, {}, fromStyles, toStyles);
              expect(players[0].keyframes).toEqual([
                {background: 'blue', offset: 0, easing: 'ease-out'},
                {background: 'red', offset: 1}
@@ -642,15 +835,17 @@ function humanizeOffsets(keyframes: ɵStyleData[], digits: number = 3): ɵStyleD
 }
 
 function invokeAnimationSequence(
-    steps: AnimationMetadata | AnimationMetadata[], startingStyles: ɵStyleData[] = [],
-    destinationStyles: ɵStyleData[] = []): AnimationTimelineInstruction[] {
-  return new Animation(steps).buildTimelines(startingStyles, destinationStyles);
+    element: any, steps: AnimationMetadata | AnimationMetadata[],
+    locals: {[key: string]: any} = null, startingStyles: ɵStyleData[] = [],
+    destinationStyles: ɵStyleData[] = [],
+    subInstructions: ElementInstructionMap = null): AnimationTimelineInstruction[] {
+  return new Animation(steps).buildTimelines(
+      element, startingStyles, destinationStyles, locals, subInstructions);
 }
 
 function validateAndThrowAnimationSequence(steps: AnimationMetadata | AnimationMetadata[]) {
-  const ast =
-      Array.isArray(steps) ? sequence(<AnimationMetadata[]>steps) : <AnimationMetadata>steps;
-  const errors = validateAnimationSequence(ast);
+  const errors: any[] = [];
+  const ast = buildAnimationAst(steps, errors);
   if (errors.length) {
     throw new Error(errors.join('\n'));
   }

@@ -26,6 +26,7 @@ export abstract class AnimationPlayer {
   abstract getPosition(): number;
   get parentPlayer(): AnimationPlayer { throw new Error('NOT IMPLEMENTED: Base Class'); }
   set parentPlayer(player: AnimationPlayer) { throw new Error('NOT IMPLEMENTED: Base Class'); }
+  get totalTime(): number { throw new Error('NOT IMPLEMENTED: Base Class'); }
 }
 
 /**
@@ -39,6 +40,7 @@ export class NoopAnimationPlayer implements AnimationPlayer {
   private _destroyed = false;
   private _finished = false;
   public parentPlayer: AnimationPlayer = null;
+  public totalTime = 0;
   constructor() {}
   private _onFinish() {
     if (!this._finished) {
